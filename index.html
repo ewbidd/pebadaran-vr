@@ -1,125 +1,255 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="id">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Virtual Tour - Kampung Pebadaran</title>
-    <meta name="description" content="Jelajahi Kampung Pebadaran secara virtual 360°.">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Virtual Tour – Kampung Pebadaran</title>
+    <meta
+      name="description"
+      content="Jelajahi Kampung Pebadaran secara virtual 360° seperti Google Street View."
+    />
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Intercept DeviceOrientation untuk toggle ON/OFF Gyro tanpa merusak Touch Pitch Controls -->
     <script>
-        window.gyroEnabled = true;
-        const originalAddEventListener = window.addEventListener;
-        const gyroListeners = [];
-        window.addEventListener = function (type, listener, options) {
-            if (type === "deviceorientation" || type === "deviceorientationabsolute") {
-                const wrapped = function (e) { if (window.gyroEnabled) listener.call(this, e); };
-                gyroListeners.push({ original: listener, wrapped });
-                originalAddEventListener.call(this, type, wrapped, options);
-            } else { originalAddEventListener.call(this, type, listener, options); }
-        };
-        const originalRemoveEventListener = window.removeEventListener;
-        window.removeEventListener = function (type, listener, options) {
-            if (type === "deviceorientation" || type === "deviceorientationabsolute") {
-                const idx = gyroListeners.findIndex(x => x.original === listener);
-                if (idx !== -1) { originalRemoveEventListener.call(this, type, gyroListeners[idx].wrapped, options); gyroListeners.splice(idx, 1); }
-                else { originalRemoveEventListener.call(this, type, listener, options); }
-            } else { originalRemoveEventListener.call(this, type, listener, options); }
-        };
-    <\/script>
-    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"><\/script>
-    <script src="data/scene.js"><\/script>
-    <link rel="stylesheet" href="style.css">
-    <link rel="preload" href="assets/images/1.jpg" as="image">
-</head>
-<body>
+      window.gyroEnabled = true; // Default aktif di mobile
+      const originalAddEventListener = window.addEventListener;
+      const gyroListeners = [];
 
-    <!-- LOADING SCREEN -->
+      window.addEventListener = function (type, listener, options) {
+        if (
+          type === "deviceorientation" ||
+          type === "deviceorientationabsolute"
+        ) {
+          const wrappedListener = function (event) {
+            if (window.gyroEnabled) {
+              listener.call(this, event);
+            }
+          };
+          gyroListeners.push({ original: listener, wrapped: wrappedListener });
+          originalAddEventListener.call(this, type, wrappedListener, options);
+        } else {
+          originalAddEventListener.call(this, type, listener, options);
+        }
+      };
+
+      const originalRemoveEventListener = window.removeEventListener;
+      window.removeEventListener = function (type, listener, options) {
+        if (
+          type === "deviceorientation" ||
+          type === "deviceorientationabsolute"
+        ) {
+          const index = gyroListeners.findIndex(
+            (item) => item.original === listener,
+          );
+          if (index !== -1) {
+            originalRemoveEventListener.call(
+              this,
+              type,
+              gyroListeners[index].wrapped,
+              options,
+            );
+            gyroListeners.splice(index, 1);
+          } else {
+            originalRemoveEventListener.call(this, type, listener, options);
+          }
+        } else {
+          originalRemoveEventListener.call(this, type, listener, options);
+        }
+      };
+    </script>
+
+    <!-- A-Frame -->
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+
+    <!-- Scene Data -->
+    <script src="data/scene.js"></script>
+
+    <link rel="stylesheet" href="style.css" />
+
+    <!-- Preload gambar pertama agar langsung dimuat -->
+    <link rel="preload" href="assets/images/1.jpg" as="image" />
+  </head>
+
+  <body>
+    <!-- ==============================
+         LOADING SCREEN
+    ================================= -->
     <div id="loading-screen">
-        <div class="loading-content">
-            <div class="loading-logo">
-                <div class="logo-ring"></div>
-                <div class="logo-ring ring-2"></div>
-                <div class="logo-inner"><span>360&deg;<\/span><\/div>
-            <\/div>
-            <h1 class="loading-title">Virtual Tour<\/h1>
-            <p class="loading-subtitle">Kampung<br><strong>Pebadaran<\/strong><\/p>
-            <div class="loading-bar-wrap"><div class="loading-bar" id="loadingBar"><\/div><\/div>
-            <p class="loading-hint" id="loadingHint">Memuat panorama...<\/p>
-        <\/div>
-    <\/div>
+      <div class="loading-content">
+        <div class="loading-logo">
+          <div class="logo-ring"></div>
+          <div class="logo-ring ring-2"></div>
+          <div class="logo-inner">
+            <span>360°</span>
+          </div>
+        </div>
+        <h1 class="loading-title">Virtual Tour</h1>
+        <p class="loading-subtitle">Kampung<br /><strong>Pebadaran</strong></p>
+        <div class="loading-bar-wrap">
+          <div class="loading-bar" id="loadingBar"></div>
+        </div>
+        <p class="loading-hint" id="loadingHint">Memuat aset panorama...</p>
+      </div>
+    </div>
 
-    <!-- A-FRAME SCENE -->
-    <a-scene id="aScene" vr-mode-ui="enabled: true" renderer="antialias: true; colorManagement: true"
-        loading-screen="enabled: false" cursor="rayOrigin: mouse" raycaster="objects: .clickable">
-        <a-assets id="aAssets" timeout="30000"><\/a-assets>
-        <a-entity id="cameraRig" position="0 0 0">
-            <a-entity id="camera" camera look-controls="pointerLockEnabled: false; reverseMouseDrag: true"
-                position="0 1.6 0" wasd-controls="enabled: false">
-                <a-cursor id="cursor" color="rgba(0,0,0,0)" fuse="false"
-                    geometry="primitive: ring; radiusInner: 0.001; radiusOuter: 0.002"
-                    material="opacity: 0; transparent: true" visible="false">
-                <\/a-cursor>
-            <\/a-entity>
-        <\/a-entity>
-        <a-sky id="sky" radius="500"><\/a-sky>
-        <a-light type="ambient" color="#ffffff" intensity="1.5"><\/a-light>
-        <a-entity id="navButtonsContainer"><\/a-entity>
-        <a-entity id="nadirCopyright" position="0 0.05 0" rotation="-90 0 0">
-            <a-text value="Copyright 2026 | Kukerta UNRI 2026"
-                align="center" width="2.4" color="#FFFFFF" shader="flat" side="double" opacity="0.7"><\/a-text>
-        <\/a-entity>
-    <\/a-scene>
+    <!-- ==============================
+         A-FRAME SCENE
+    ================================= -->
+    <a-scene
+      id="aScene"
+      vr-mode-ui="enabled: true"
+      renderer="antialias: true; colorManagement: true"
+      loading-screen="enabled: false"
+      cursor="rayOrigin: mouse"
+      raycaster="objects: .clickable"
+    >
+      <!-- ASSETS PRELOADER -->
+      <a-assets id="aAssets" timeout="30000"> </a-assets>
 
-    <!-- HUD -->
+      <!-- CAMERA -->
+      <a-entity id="cameraRig" position="0 0 0">
+        <a-entity
+          id="camera"
+          camera
+          look-controls="pointerLockEnabled: false; reverseMouseDrag: true"
+          position="0 1.6 0"
+          wasd-controls="enabled: false"
+        >
+          <a-cursor
+            id="cursor"
+            color="rgba(0,0,0,0)"
+            fuse="false"
+            raycaster="enabled: false; objects: .clickable"
+            geometry="primitive: ring; radiusInner: 0.001; radiusOuter: 0.002"
+            material="opacity: 0; transparent: true"
+            visible="false"
+          >
+          </a-cursor>
+        </a-entity>
+      </a-entity>
+
+      <!-- SKY 360 -->
+      <a-sky id="sky" radius="500"></a-sky>
+
+      <!-- AMBIENT LIGHT -->
+      <a-light type="ambient" color="#ffffff" intensity="1.5"></a-light>
+
+      <!-- VIRTUAL NAV BUTTONS — generated dynamically by app.js -->
+      <!-- Tombol navigasi N/S/E/W dibuat dari data links[] di scene.js -->
+
+      <!-- 3D NADIR COPYRIGHT (Teks Virtual di Lantai) -->
+      <a-entity id="nadirCopyright" position="0 0.05 0" rotation="-90 0 0">
+        <a-text
+          value="Copyright 2026 | Dibuat oleh Kukerta UNRI 2026"
+          align="center"
+          width="2.4"
+          color="#FFFFFF"
+          shader="flat"
+          side="double"
+          opacity="0.7"
+        ></a-text>
+      </a-entity>
+    </a-scene>
+
+    <!-- ==============================
+         HUD OVERLAY
+    ================================= -->
     <div id="hud" class="hud">
-        <div class="hud-top">
-            <div class="hud-brand">
-                <div class="brand-info">
-                    <span class="brand-name">Virtual Tour<\/span>
-                    <span class="brand-sub">Kampung Pebadaran<\/span>
-                <\/div>
-            <\/div>
-            <div class="hud-actions">
-                <select id="selectScene" class="hud-select" title="Lompat ke Lokasi"><\/select>
-                <button id="btnGyro" class="hud-btn" title="Toggle Gyroscope">GYRO: ON<\/button>
-                <button id="btnFullscreen" class="hud-btn" title="Layar Penuh">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" \/>
-                    <\/svg>
-                <\/button>
-            <\/div>
-        <\/div>
-        <div class="scene-info" id="sceneInfo">
-            <div class="scene-meta">
-                <h2 class="scene-label" id="sceneLabel">-<\/h2>
-                <p class="scene-desc" id="sceneDesc">-<\/p>
-            <\/div>
-        <\/div>
-        <div class="drag-hint" id="dragHint">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="20" height="20">
-                <path d="M9 11V6.5a1.5 1.5 0 0 1 3 0V11" \/><path d="M12 11V5.5a1.5 1.5 0 0 1 3 0V11" \/>
-                <path d="M15 11V7.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6H9a6 6 0 0 1-6-6V11a1.5 1.5 0 0 1 3 0" \/>
-            <\/svg>
-            Seret untuk melihat sekitar
-        <\/div>
-        <div class="nav-controls">
-            <div class="nav-compass" id="navCompass">
-                <div class="compass-ring">
-                    <div class="compass-needle"><\/div>
-                    <span class="compass-n">N<\/span>
-                <\/div>
-            <\/div>
-        <\/div>
-        <div class="hud-copyright">Copyright &copy; 2026 | Dibuat dengan &#10084;&#65039; oleh Kukerta UNRI 2026<\/div>
-    <\/div>
+      <!-- TOP BAR -->
+      <div class="hud-top">
+        <div class="hud-brand">
+          <div class="brand-info">
+            <span class="brand-name">Virtual Tour</span>
+            <span class="brand-sub">Kampung Pebadaran</span>
+          </div>
+        </div>
+        <div class="hud-actions">
+          <select
+            id="selectScene"
+            class="hud-select"
+            title="Lompat ke Lokasi"
+          ></select>
+          <button id="btnGyro" class="hud-btn" title="Toggle Gyroscope">
+            GYRO: ON
+          </button>
+          <button id="btnFullscreen" class="hud-btn" title="Layar Penuh">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
 
+      <!-- SCENE INFO -->
+      <div class="scene-info" id="sceneInfo">
+        <div class="scene-meta">
+          <h2 class="scene-label" id="sceneLabel">Gerbang Utama</h2>
+          <p class="scene-desc" id="sceneDesc">
+            Pintu masuk Fakultas Teknik UNRI
+          </p>
+          <div class="scene-dot-wrap" id="sceneDots"></div>
+        </div>
+      </div>
+
+      <!-- HINT DRAG -->
+      <div class="drag-hint" id="dragHint">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          width="20"
+          height="20"
+        >
+          <path d="M9 11V6.5a1.5 1.5 0 0 1 3 0V11" />
+          <path d="M12 11V5.5a1.5 1.5 0 0 1 3 0V11" />
+          <path
+            d="M15 11V7.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6H9a6 6 0 0 1-6-6V11a1.5 1.5 0 0 1 3 0"
+          />
+        </svg>
+        Seret untuk melihat sekitar
+      </div>
+
+      <!-- NAVIGATION -->
+      <div class="nav-controls">
+        <div class="nav-compass" id="navCompass">
+          <div class="compass-ring">
+            <div class="compass-needle"></div>
+            <span class="compass-n">N</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- COPYRIGHT OVERLAY -->
+      <div class="hud-copyright">
+        Copyright &copy; 2026 | Dibuat dengan ❤️ oleh KKN UNRI 2026
+      </div>
+    </div>
+
+    <!-- SCENE LOADING SPINNER (muncul saat gambar belum siap) -->
     <div id="sceneSpinner" class="scene-spinner">
-        <div class="scene-spinner-ring"><\/div>
-        <span>Memuat...</span>
-    <\/div>
-    <div id="fadeOverlay" class="fade-overlay"><\/div>
-    <script src="app.js"><\/script>
-<\/body>
-<\/html>
+      <div class="scene-spinner-ring"></div>
+      <span>Memuat...</span>
+    </div>
+
+    <!-- FADE OVERLAY for transitions -->
+    <div id="fadeOverlay" class="fade-overlay"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
