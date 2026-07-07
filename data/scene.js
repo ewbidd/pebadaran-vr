@@ -90,7 +90,7 @@
 const SCENES = [
   {
     id: 1,
-    src: "assets/image/1.jpg",
+    src: "assets/images/1.jpg",
     label: "Tugu Kampung Pebadaran",
     description: "desc",
     rotation: "0 180 0",
@@ -100,7 +100,7 @@ const SCENES = [
   },
   {
     id: 2,
-    src: "assets/image/2.jpg",
+    src: "assets/images/2.jpg",
     label: "Masjid Raya Pusako",
     description: "Masjid Sultan Mahmud Abdul Jalil Muzaffar SYAH",
     rotation: "0 180 0",
@@ -113,7 +113,7 @@ const SCENES = [
   },
   {
     id: 3,
-    src: "assets/image/3.jpg",
+    src: "assets/images/3.jpg",
     label: "Simpang Kantor Desa",
     description: "Simpang Kantor Desa",
     rotation: "0 180 0",
@@ -127,7 +127,7 @@ const SCENES = [
   },
   {
     id: 4,
-    src: "assets/image/4.jpg",
+    src: "assets/images/4.jpg",
     label: "Kantor Kampung",
     description: "Kantor Kampung Pebadaran",
     rotation: "0 180 0",
@@ -140,7 +140,7 @@ const SCENES = [
   },
   {
     id: 5,
-    src: "assets/image/5.jpg",
+    src: "assets/images/5.jpg",
     label: "KUA",
     description: "Kantor Urusan Agama Kec. Pusako",
     rotation: "0 0 0",
@@ -150,7 +150,7 @@ const SCENES = [
   },
   {
     id: 6,
-    src: "assets/image/6.jpg",
+    src: "assets/images/6.jpg",
     label: "Puskesmas",
     description: "Puskesmas Kec. Pusako",
     rotation: "0 180 0",
@@ -166,7 +166,7 @@ const SCENES = [
   },
   {
     id: 7,
-    src: "assets/image/7.jpg",
+    src: "assets/images/7.jpg",
     label: "Mushola",
     description: "Mushola Nurul-Hasanah",
     rotation: "0 180 0",
@@ -182,7 +182,7 @@ const SCENES = [
   },
   {
     id: 8,
-    src: "assets/image/8.jpg",
+    src: "assets/images/8.jpg",
     label: "Koperasi Kampung",
     description: "Koperasi Tuah Abadi Makmur Kampung Pebadaran",
     rotation: "0 180 0",
@@ -195,7 +195,7 @@ const SCENES = [
   },
   {
     id: 9,
-    src: "assets/image/9.jpg",
+    src: "assets/images/9.jpg",
     label: "Posko",
     description: "Posko KKN UNRI 2026",
     rotation: "0 180 0",
@@ -208,7 +208,7 @@ const SCENES = [
   },
   {
     id: 10,
-    src: "assets/image/10.jpg",
+    src: "assets/images/10.jpg",
     label: "RT 05",
     description: "Rumah Ketua RT 05",
     rotation: "0 180 0",
@@ -221,7 +221,7 @@ const SCENES = [
   },
   {
     id: 11,
-    src: "assets/image/11.jpg",
+    src: "assets/images/11.jpg",
     label: "Simpang Mangrove",
     description: "Simpang Mangrove & Dermaga",
     rotation: "0 180 0",
@@ -235,7 +235,7 @@ const SCENES = [
   },
   {
     id: 12,
-    src: "assets/image/12.jpg",
+    src: "assets/images/12.jpg",
     label: "Rumah RW 02",
     description: "Rumah Ketua RW 02 Kampung Pebadaran",
     rotation: "0 0 0",
@@ -248,7 +248,7 @@ const SCENES = [
   },
   {
     id: 13,
-    src: "assets/image/13.jpg",
+    src: "assets/images/13.jpg",
     label: "Rumah Penghulu",
     description: "Rumah Penghulu Kampung Pebadaran",
     rotation: "0 180 0",
@@ -261,7 +261,7 @@ const SCENES = [
   },
   {
     id: 14,
-    src: "assets/image/14.jpg",
+    src: "assets/images/14.jpg",
     label: "Simpang Lapangan",
     description: "Simpang Lapangan Volley Kampung Pebadaran",
     rotation: "0 180 0",
@@ -279,7 +279,7 @@ const SCENES = [
   },
   {
     id: 15,
-    src: "assets/image/15.jpg",
+    src: "assets/images/15.jpg",
     label: "Dermaga",
     description: "Dermaga Kampung Pebadaran",
     rotation: "0 180 0",
@@ -292,7 +292,7 @@ const SCENES = [
   },
   {
     id: 16,
-    src: "assets/image/16.jpg",
+    src: "assets/images/16.jpg",
     label: "Rumah Kadus 02",
     description: "Rumah Ketua Dusun 02 Kampung Pebadaran",
     rotation: "0 180 0",
@@ -305,7 +305,7 @@ const SCENES = [
   },
   {
     id: 17,
-    src: "assets/image/17.jpg",
+    src: "assets/images/17.jpg",
     label: "Gang Sekolah",
     description: "Gang Sekolah Kampung Pebadaran",
     rotation: "0 180 0",
@@ -319,7 +319,7 @@ const SCENES = [
   },
   {
     id: 18,
-    src: "assets/image/18.jpg",
+    src: "assets/images/18.jpg",
     label: "Masjid At-Taqwa",
     description: "Masjid At-Taqwa",
     rotation: "0 180 0",
@@ -332,7 +332,7 @@ const SCENES = [
   },
   {
     id: 19,
-    src: "assets/image/19.jpg",
+    src: "assets/images/19.jpg",
     label: "Posyandu Kamboja",
     description: "Posyandu Kampung Pebadaran",
     rotation: "0 180 0",
@@ -342,7 +342,7 @@ const SCENES = [
   },
   {
     id: 20,
-    src: "assets/image/20.jpg",
+    src: "assets/images/20.jpg",
     label: "SDN 04",
     description: "Sekolah Dasar 04 Kampung Pebadaran",
     rotation: "0 180 0",
@@ -355,7 +355,7 @@ const SCENES = [
   },
   {
     id: 21,
-    src: "assets/image/21.jpg",
+    src: "assets/images/21.jpg",
     label: "Simpang Gg. Sekolah & Gg. TK MDTA",
     description: "Simpang Gg. Sekolah & Gg. TK MDTA",
     rotation: "0 180 0",
@@ -370,7 +370,7 @@ const SCENES = [
   },
   {
     id: 22,
-    src: "assets/image/22.jpg",
+    src: "assets/images/22.jpg",
     label: "TK Buah Hati Bunda",
     description: "TK Buah Hati Bunda Kampung Pebadaran",
     rotation: "0 180 0",
@@ -380,7 +380,7 @@ const SCENES = [
   },
   {
     id: 23,
-    src: "assets/image/23.jpg",
+    src: "assets/images/23.jpg",
     label: "mark 23",
     description: "",
     rotation: "0 180 0",
@@ -393,7 +393,7 @@ const SCENES = [
   },
   {
     id: 24,
-    src: "assets/image/24.jpg",
+    src: "assets/images/24.jpg",
     label: "Rumah Ketua RW 01",
     description: "Rumah Ketua RW 01 Kampung Pebadaran",
     rotation: "0 180 0",
@@ -406,7 +406,7 @@ const SCENES = [
   },
   {
     id: 25,
-    src: "assets/image/25.jpg",
+    src: "assets/images/25.jpg",
     label: "mark 25",
     description: "",
     rotation: "0 180 0",
@@ -422,7 +422,7 @@ const SCENES = [
   },
   {
     id: 26,
-    src: "assets/image/26.jpg",
+    src: "assets/images/26.jpg",
     label: "mark 26",
     description: "",
     rotation: "0 180 0",
@@ -438,7 +438,7 @@ const SCENES = [
   },
   {
     id: 27,
-    src: "assets/image/27.jpg",
+    src: "assets/images/27.jpg",
     label: "Tugu Selamat Jalan",
     description: "Tugu Selamat Jalan Kampung Pebadaran",
     rotation: "0 180 0",
