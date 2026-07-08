@@ -17,59 +17,17 @@
       rel="stylesheet"
     />
 
-    <!-- Intercept DeviceOrientation untuk toggle ON/OFF Gyro tanpa merusak Touch Pitch Controls -->
-    <script>
-      window.gyroEnabled = true; // Default aktif di mobile
-      const originalAddEventListener = window.addEventListener;
-      const gyroListeners = [];
-
-      window.addEventListener = function (type, listener, options) {
-        if (
-          type === "deviceorientation" ||
-          type === "deviceorientationabsolute"
-        ) {
-          const wrappedListener = function (event) {
-            if (window.gyroEnabled) {
-              listener.call(this, event);
-            }
-          };
-          gyroListeners.push({ original: listener, wrapped: wrappedListener });
-          originalAddEventListener.call(this, type, wrappedListener, options);
-        } else {
-          originalAddEventListener.call(this, type, listener, options);
+    <!-- Three.js via Import Map -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
         }
-      };
-
-      const originalRemoveEventListener = window.removeEventListener;
-      window.removeEventListener = function (type, listener, options) {
-        if (
-          type === "deviceorientation" ||
-          type === "deviceorientationabsolute"
-        ) {
-          const index = gyroListeners.findIndex(
-            (item) => item.original === listener,
-          );
-          if (index !== -1) {
-            originalRemoveEventListener.call(
-              this,
-              type,
-              gyroListeners[index].wrapped,
-              options,
-            );
-            gyroListeners.splice(index, 1);
-          } else {
-            originalRemoveEventListener.call(this, type, listener, options);
-          }
-        } else {
-          originalRemoveEventListener.call(this, type, listener, options);
-        }
-      };
+      }
     </script>
 
-    <!-- A-Frame -->
-    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
-
-    <!-- Scene Data -->
+    <!-- Scene Data (global SCENES array) -->
     <script src="data/scene.js"></script>
 
     <link rel="stylesheet" href="style.css" />
@@ -101,63 +59,9 @@
     </div>
 
     <!-- ==============================
-         A-FRAME SCENE
+         THREE.JS CANVAS
     ================================= -->
-    <a-scene
-      id="aScene"
-      vr-mode-ui="enabled: true"
-      renderer="antialias: true; colorManagement: true"
-      loading-screen="enabled: false"
-      cursor="rayOrigin: mouse"
-      raycaster="objects: .clickable"
-    >
-      <!-- ASSETS PRELOADER -->
-      <a-assets id="aAssets" timeout="30000"> </a-assets>
-
-      <!-- CAMERA -->
-      <a-entity id="cameraRig" position="0 0 0">
-        <a-entity
-          id="camera"
-          camera
-          look-controls="pointerLockEnabled: false; reverseMouseDrag: true"
-          position="0 1.6 0"
-          wasd-controls="enabled: false"
-        >
-          <a-cursor
-            id="cursor"
-            color="rgba(0,0,0,0)"
-            fuse="false"
-            raycaster="enabled: false; objects: .clickable"
-            geometry="primitive: ring; radiusInner: 0.001; radiusOuter: 0.002"
-            material="opacity: 0; transparent: true"
-            visible="false"
-          >
-          </a-cursor>
-        </a-entity>
-      </a-entity>
-
-      <!-- SKY 360 -->
-      <a-sky id="sky" radius="500"></a-sky>
-
-      <!-- AMBIENT LIGHT -->
-      <a-light type="ambient" color="#ffffff" intensity="1.5"></a-light>
-
-      <!-- VIRTUAL NAV BUTTONS — generated dynamically by app.js -->
-      <!-- Tombol navigasi N/S/E/W dibuat dari data links[] di scene.js -->
-
-      <!-- 3D NADIR COPYRIGHT (Teks Virtual di Lantai) -->
-      <a-entity id="nadirCopyright" position="0 0.05 0" rotation="-90 0 0">
-        <a-text
-          value="Copyright 2026 | Dibuat oleh Kukerta UNRI 2026"
-          align="center"
-          width="2.4"
-          color="#FFFFFF"
-          shader="flat"
-          side="double"
-          opacity="0.7"
-        ></a-text>
-      </a-entity>
-    </a-scene>
+    <canvas id="vrCanvas"></canvas>
 
     <!-- ==============================
          HUD OVERLAY
@@ -250,6 +154,6 @@
     <!-- FADE OVERLAY for transitions -->
     <div id="fadeOverlay" class="fade-overlay"></div>
 
-    <script src="app.js"></script>
+    <script type="module" src="app.js"></script>
   </body>
 </html>

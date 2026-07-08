@@ -1,6 +1,6 @@
 /* =========================================================
-   VIRTUAL TOUR – Fakultas Teknik UNRI
-   Professional Google Maps 360 Style
+   VIRTUAL TOUR – Kampung Pebadaran
+   Professional Google Street View Style (Three.js)
    ========================================================= */
 
 /* --- RESET & BASE --- */
@@ -159,12 +159,16 @@ body {
 }
 
 /* =========================================================
-   A-FRAME CANVAS
+   THREE.JS CANVAS
    ========================================================= */
-canvas {
-    display: block;
+#vrCanvas {
+    position: fixed;
+    inset: 0;
     width: 100% !important;
     height: 100% !important;
+    display: block;
+    z-index: 0;
+    cursor: grab;
     /* Smooth filter transition sinkron dengan ZOOM_IN_MS (300ms) */
     transition: filter 0.22s cubic-bezier(0.4, 0, 1, 1),
                 transform 0.22s cubic-bezier(0.4, 0, 1, 1);
@@ -172,8 +176,12 @@ canvas {
     transform-origin: center center;
 }
 
+#vrCanvas:active {
+    cursor: grabbing;
+}
+
 /* Kelas aktif saat zoom-forward berjalan */
-canvas.vr-zoom {
+#vrCanvas.vr-zoom {
     filter: blur(3.5px) brightness(1.08);
     transform: scale(1.018);
 }
@@ -437,7 +445,6 @@ canvas.vr-zoom {
 /* ---- NAVIGATION ---- */
 .nav-controls {
     position: relative;
-    /* Container relatif untuk memposisikan tombol gyro secara absolut di bawah tengah */
     pointer-events: all;
     display: flex;
     align-items: center;
@@ -535,7 +542,7 @@ canvas.vr-zoom {
     bottom: 50%;
     left: 50%;
     margin-left: -1.5px;
-    transition: transform 0.15s ease;
+    transition: transform 0.08s ease;
 }
 
 .compass-n {
@@ -618,7 +625,6 @@ canvas.vr-zoom {
     border-radius: 99px;
     padding: 7px 16px;
     margin: auto auto 6px;
-    /* margin-top: auto mendorong blok bawah ke bawah HUD */
     font-size: 12px;
     color: var(--text-muted);
     backdrop-filter: blur(12px);

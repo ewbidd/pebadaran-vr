@@ -1,337 +1,572 @@
 /* =========================================================
-   VIRTUAL TOUR – Fakultas Teknik UNRI
-   app.js – Main Application Logic (Optimized Lazy Loading)
+   VIRTUAL TOUR – Kampung Pebadaran
+   app.js – Three.js Implementation (Google Street View UX)
    =========================================================
    Fitur:
+   - Three.js panorama sphere (SphereGeometry + BackSide)
+   - OrbitControls (damping, zoom, pitch/yaw built-in)
    - LAZY LOADING: Hanya muat gambar yang dibutuhkan
-   - Loading screen hanya tunggu 1 gambar (bukan semua)
    - Smart preload: otomatis siapkan scene tetangga (links[])
-   - Image cache dengan LRU (max 7 gambar di memory)
+   - Image/Texture cache dengan LRU (max 7 di memory)
    - Mini spinner saat scene belum siap
    - Zoom-forward transition (Google Maps style)
    - Multi-directional nav: N/S/E/W (simpang 3 & 4)
-   - Dynamic 3D nav buttons (generated per scene)
+   - Dynamic 3D nav arrows (raycaster click)
+   - Dynamic 3D label planes (CanvasTexture)
    - HUD: scene info, scene selector, scene dots
    - Compass live (mengikuti arah pandang kamera)
    - Fullscreen API, Gyroscope mobile
    - Drag hint auto-hide
-   - Mouse drag inertia (smooth stopping)
+   - Grab/grabbing cursor (Google Street View style)
    ========================================================= */
 
 "use strict";
+
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 // ── DOM References ─────────────────────────────────────────
 const $loadingScreen = document.getElementById("loading-screen");
 const $loadingBar = document.getElementById("loadingBar");
 const $loadingHint = document.getElementById("loadingHint");
 
-const $sky = document.getElementById("sky");
+const $canvas = document.getElementById("vrCanvas");
 const $fadeOverlay = document.getElementById("fadeOverlay");
 
-const $btnPrev = document.getElementById("btnPrev");
-const $btnNext = document.getElementById("btnNext");
 const $btnFullscreen = document.getElementById("btnFullscreen");
 const $btnGyro = document.getElementById("btnGyro");
 
 const $sceneLabel = document.getElementById("sceneLabel");
 const $sceneDesc = document.getElementById("sceneDesc");
-const $sceneNum = document.getElementById("sceneNum");
-const $sceneTotal = document.getElementById("sceneTotal");
 const $sceneDots = document.getElementById("sceneDots");
 const $dragHint = document.getElementById("dragHint");
 const $compassNeedle = document.querySelector(".compass-needle");
 const $sceneSpinner = document.getElementById("sceneSpinner");
-const $cursor = document.getElementById("cursor");
 const $selectScene = document.getElementById("selectScene");
+
+// ── Three.js Core ─────────────────────────────────────────
+let scene, camera, renderer, orbitControls;
+let sphereMesh, sphereMaterial;
+const textureLoader = new THREE.TextureLoader();
 
 // ── State ──────────────────────────────────────────────────
 let currentIndex = 0;
 let isTransitioning = false;
 let hintDismissed = false;
-let activeLabelPlanes = []; // Menyimpan referensi plane 3D yang sedang aktif
-let activeNavButtons = []; // Menyimpan referensi tombol navigasi 3D yang sedang aktif
+let gyroEnabled = false;
 
-// ── Image Cache (LRU) ─────────────────────────────────────
-// Menyimpan Image objects yang sudah dimuat.
-// Max 7 gambar di memory agar tidak boros RAM.
-const IMAGE_CACHE_MAX = 7;
-const imageCache = new Map(); // key: scene index, value: Image object
+// 3D objects in scene (to be cleaned up on scene change)
+let activeNavArrows = [];    // THREE.Group objects for nav arrows
+let activeLabelPlanes = [];  // THREE.Mesh objects for label planes
+let nadirMesh = null;        // nadir copyright mesh
 
-/**
- * Muat gambar secara lazy. Mengembalikan Promise<Image>.
- * Jika sudah ada di cache, langsung resolve.
- */
-function loadImage(index) {
+// Raycaster for click detection
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let hoveredArrow = null;
+
+// ── Texture Cache (LRU) ──────────────────────────────────
+const TEXTURE_CACHE_MAX = 7;
+const textureCache = new Map(); // key: scene index, value: THREE.Texture
+
+// ── FOV Constants ──────────────────────────────────────────
+const FOV_NORMAL = 80;
+const FOV_ZOOMED = 55;
+const ZOOM_IN_MS = 300;
+const ZOOM_OUT_MS = 380;
+const ZOOM_FOV_MIN = 30;
+const ZOOM_FOV_MAX = 100;
+
+// Default positions per compass direction
+const DIR_DEFAULTS = {
+  N: { pos: "0 0 -5", rot: "-90 0 0" },
+  S: { pos: "0 0 5", rot: "-90 180 0" },
+  E: { pos: "5 0 0", rot: "-90 -90 0" },
+  W: { pos: "-5 0 0", rot: "-90 90 0" },
+};
+
+// Colors per compass direction
+const DIR_COLORS = {
+  N: "#00E676",
+  S: "#FF5252",
+  E: "#448AFF",
+  W: "#FFD740",
+};
+
+// Compass offset
+const COMPASS_OFFSET = 90;
+
+// ── Utility: Parse A-Frame format strings ──────────────────
+function parsePosition(str) {
+  const parts = str.trim().split(/\s+/).map(Number);
+  return new THREE.Vector3(parts[0] || 0, parts[1] || 0, parts[2] || 0);
+}
+
+function parseRotationDeg(str) {
+  const parts = str.trim().split(/\s+/).map(Number);
+  return new THREE.Euler(
+    THREE.MathUtils.degToRad(parts[0] || 0),
+    THREE.MathUtils.degToRad(parts[1] || 0),
+    THREE.MathUtils.degToRad(parts[2] || 0)
+  );
+}
+
+// ── Easing functions ───────────────────────────────────────
+function easeInQuart(t) {
+  return t * t * t * t;
+}
+function easeOutQuart(t) {
+  return 1 - Math.pow(1 - t, 4);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  THREE.JS SETUP
+// ══════════════════════════════════════════════════════════════
+
+function initThree() {
+  // Scene
+  scene = new THREE.Scene();
+
+  // Camera
+  camera = new THREE.PerspectiveCamera(
+    FOV_NORMAL,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1100
+  );
+  camera.position.set(0, 0, 0.01); // slightly off center for OrbitControls
+
+  // Renderer
+  renderer = new THREE.WebGLRenderer({
+    canvas: $canvas,
+    antialias: true,
+    alpha: false,
+  });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.NoToneMapping;
+
+  // Panorama Sphere
+  const sphereGeo = new THREE.SphereGeometry(500, 64, 32);
+  sphereGeo.scale(-1, 1, 1); // invert so texture is on inside
+  sphereMaterial = new THREE.MeshBasicMaterial({
+    color: 0x000000,
+    side: THREE.FrontSide,
+  });
+  sphereMesh = new THREE.Mesh(sphereGeo, sphereMaterial);
+  scene.add(sphereMesh);
+
+  // OrbitControls
+  orbitControls = new OrbitControls(camera, renderer.domElement);
+  orbitControls.enableDamping = true;
+  orbitControls.dampingFactor = 0.08;
+  orbitControls.enableZoom = false;    // We handle zoom via FOV
+  orbitControls.enablePan = false;
+  orbitControls.rotateSpeed = -0.3;    // negative = reverse drag (Google Street View style)
+  orbitControls.target.set(0, 0, 0);
+  // Limit vertical rotation
+  orbitControls.minPolarAngle = 0.1;   // don't go fully above
+  orbitControls.maxPolarAngle = Math.PI - 0.1; // don't go fully below
+
+  // Window resize handler
+  window.addEventListener("resize", onWindowResize);
+}
+
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  TEXTURE CACHE (LRU)
+// ══════════════════════════════════════════════════════════════
+
+function loadTexture(index) {
   if (index < 0 || index >= SCENES.length) return Promise.resolve(null);
 
-  // Sudah di cache? Pindahkan ke akhir (LRU) dan return
-  if (imageCache.has(index)) {
-    const cached = imageCache.get(index);
-    imageCache.delete(index);
-    imageCache.set(index, cached);
+  // Already cached?
+  if (textureCache.has(index)) {
+    const cached = textureCache.get(index);
+    textureCache.delete(index);
+    textureCache.set(index, cached);
     return Promise.resolve(cached);
   }
 
   return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      addToCache(index, img);
-      resolve(img);
-    };
-    img.onerror = () => {
-      // Tetap resolve agar tidak block
-      resolve(null);
-    };
-    img.src = SCENES[index].src;
+    textureLoader.load(
+      SCENES[index].src,
+      (texture) => {
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        addToCache(index, texture);
+        resolve(texture);
+      },
+      undefined,
+      (err) => {
+        console.warn("Texture load error for index", index, err);
+        resolve(null);
+      }
+    );
   });
 }
 
-/**
- * Tambahkan gambar ke cache. Evict yang paling lama jika penuh.
- */
-function addToCache(index, img) {
-  if (imageCache.has(index)) {
-    imageCache.delete(index);
+function addToCache(index, texture) {
+  if (textureCache.has(index)) {
+    textureCache.delete(index);
   }
-  imageCache.set(index, img);
+  textureCache.set(index, texture);
 
-  // Evict oldest jika melebihi batas
-  while (imageCache.size > IMAGE_CACHE_MAX) {
-    const oldestKey = imageCache.keys().next().value;
-    imageCache.delete(oldestKey);
+  // Evict oldest if over limit
+  while (textureCache.size > TEXTURE_CACHE_MAX) {
+    const oldestKey = textureCache.keys().next().value;
+    const oldTex = textureCache.get(oldestKey);
+    if (oldTex) oldTex.dispose();
+    textureCache.delete(oldestKey);
   }
 }
 
-/**
- * Cek apakah gambar sudah tersedia di cache.
- */
-function isImageCached(index) {
-  return imageCache.has(index);
+function isTextureCached(index) {
+  return textureCache.has(index);
 }
 
-/**
- * Preload scene-scene tetangga di background (tidak blocking).
- * Membaca links[] dari scene aktif dan preload semua targetId-nya.
- */
 function preloadNeighbors(centerIndex) {
-  const scene = SCENES[centerIndex];
-  if (!scene || !scene.links) return;
+  const sceneData = SCENES[centerIndex];
+  if (!sceneData || !sceneData.links) return;
 
-  scene.links.forEach((link) => {
+  sceneData.links.forEach((link) => {
     const targetIdx = SCENES.findIndex((s) => s.id === link.targetId);
-    if (targetIdx !== -1 && !imageCache.has(targetIdx)) {
-      loadImage(targetIdx); // fire-and-forget
+    if (targetIdx !== -1 && !textureCache.has(targetIdx)) {
+      loadTexture(targetIdx); // fire-and-forget
     }
   });
 }
 
-// ── Init ───────────────────────────────────────────────────
-function init() {
-  if ($sceneTotal) $sceneTotal.textContent = SCENES.length;
+// ══════════════════════════════════════════════════════════════
+//  SCENE APPLICATION (apply texture + rotation + camera yaw)
+// ══════════════════════════════════════════════════════════════
 
-  // Default A-Frame di mobile menyalakan gyro saat load, sinkronisasikan state-nya
-  if (
-    typeof AFRAME !== "undefined" &&
-    AFRAME.utils &&
-    AFRAME.utils.device &&
-    AFRAME.utils.device.isMobile()
-  ) {
-    window.gyroEnabled = true;
-    if ($btnGyro) {
-      $btnGyro.textContent = "GYRO: ON";
-      $btnGyro.style.color = "var(--accent)";
-      $btnGyro.style.borderColor = "var(--accent)";
-    }
-  } else {
-    window.gyroEnabled = false;
-    if ($btnGyro) {
-      $btnGyro.textContent = "GYRO: OFF";
-    }
+function applyScene(index) {
+  const sceneData = SCENES[index];
+  const texture = textureCache.get(index);
+
+  // Apply texture
+  if (texture) {
+    sphereMaterial.map = texture;
+    sphereMaterial.color.setHex(0xffffff);
+    sphereMaterial.needsUpdate = true;
   }
 
-  buildDots();
-  loadFirstScene();
-  bindEvents();
-  bindZoom();
-  initVirtualNav();
-  populateSceneSelector();
-  startCompass();
-  scheduleDragHintDismiss();
-  bindTouchPitch(); // Pitch manual saat Gyro OFF
-  bindMouseInertia(); // Smooth stopping saat mouse drag dilepas
+  // Apply sphere rotation (image rotation from scene.js)
+  if (sceneData.rotation) {
+    const euler = parseRotationDeg(sceneData.rotation);
+    sphereMesh.rotation.set(euler.x, euler.y, euler.z);
+  } else {
+    sphereMesh.rotation.set(0, 0, 0);
+  }
+
+  // Apply camera yaw
+  applyCameraYaw(sceneData.cameraYaw || 0);
 }
 
-// ── Build Scene Dots (max 3 bulir) ─────────────────────────
-// Hanya 3 dot: kiri = awal, tengah = tengah, kanan = akhir
-function buildDots() {
-  $sceneDots.innerHTML = "";
-  for (let i = 0; i < 3; i++) {
-    const dot = document.createElement("div");
-    dot.className = "scene-dot";
-    $sceneDots.appendChild(dot);
-  }
-  updateDots();
+function applyCameraYaw(yawDeg) {
+  const yawRad = THREE.MathUtils.degToRad(yawDeg || 0);
+
+  // Reset camera to center
+  camera.position.set(0, 0, 0.01);
+
+  // Calculate target point from yaw
+  // In Three.js: yaw = rotation around Y axis
+  // A-Frame yaw 0 = forward (-Z), 90 = right (+X), -90 = left (-X)
+  const targetX = Math.sin(yawRad) * 10;
+  const targetZ = -Math.cos(yawRad) * 10;
+
+  orbitControls.target.set(targetX, 0, targetZ);
+  orbitControls.update();
 }
 
-/**
- * Update posisi dot aktif berdasarkan currentIndex:
- * - Foto pertama (index 0) → dot kiri aktif
- * - Foto terakhir → dot kanan aktif
- * - Di tengah-tengah → dot tengah aktif
- */
-function updateDots() {
-  const dots = $sceneDots.querySelectorAll(".scene-dot");
-  if (dots.length < 3) return;
+// ══════════════════════════════════════════════════════════════
+//  3D NAV ARROWS
+// ══════════════════════════════════════════════════════════════
 
-  let activeIdx;
-  if (currentIndex === 0) {
-    activeIdx = 0; // kiri
-  } else if (currentIndex === SCENES.length - 1) {
-    activeIdx = 2; // kanan
-  } else {
-    activeIdx = 1; // tengah
-  }
+function createNavArrow(link) {
+  const defaults = DIR_DEFAULTS[link.dir] || DIR_DEFAULTS.N;
+  const colorHex = DIR_COLORS[link.dir] || "#FFFFFF";
+  const color = new THREE.Color(colorHex);
 
-  dots.forEach((dot, i) => {
-    dot.classList.toggle("active", i === activeIdx);
+  const group = new THREE.Group();
+  group.userData = { targetId: link.targetId, dir: link.dir, isNavArrow: true };
+
+  // Arrow triangle
+  const triShape = new THREE.Shape();
+  triShape.moveTo(0, 0.35);
+  triShape.lineTo(-0.25, -0.15);
+  triShape.lineTo(0.25, -0.15);
+  triShape.closePath();
+
+  const triGeo = new THREE.ShapeGeometry(triShape);
+  const triMat = new THREE.MeshBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: 0.85,
+    side: THREE.DoubleSide,
+    depthTest: false,
   });
+  const triMesh = new THREE.Mesh(triGeo, triMat);
+  triMesh.userData = { isNavArrow: true, targetId: link.targetId };
+  group.add(triMesh);
+
+  // Background circle
+  const circleGeo = new THREE.CircleGeometry(0.45, 32);
+  const circleMat = new THREE.MeshBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: 0.15,
+    side: THREE.DoubleSide,
+    depthTest: false,
+  });
+  const circleMesh = new THREE.Mesh(circleGeo, circleMat);
+  circleMesh.position.set(0, 0.07, -0.005);
+  circleMesh.userData = { isNavArrow: true, targetId: link.targetId };
+  group.add(circleMesh);
+
+  // Outer glow ring (for hover effect)
+  const glowGeo = new THREE.RingGeometry(0.42, 0.52, 32);
+  const glowMat = new THREE.MeshBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: 0,
+    side: THREE.DoubleSide,
+    depthTest: false,
+  });
+  const glowMesh = new THREE.Mesh(glowGeo, glowMat);
+  glowMesh.position.set(0, 0.07, -0.006);
+  glowMesh.userData = { isGlow: true };
+  group.add(glowMesh);
+
+  // Position & rotation
+  const pos = parsePosition(link.pos || defaults.pos);
+  const rot = parseRotationDeg(link.rot || defaults.rot);
+  group.position.copy(pos);
+  group.rotation.copy(rot);
+
+  return group;
 }
 
-// ── Load First Scene (menggantikan preloadAssets) ──────────
-// Hanya muat 1 gambar pertama, lalu preload tetangga di background.
-function loadFirstScene() {
-  $loadingHint.textContent = "Memuat panorama 360°...";
-
-  // Simulasi progress bar yang halus
-  let fakeProgress = 0;
-  const fakeInterval = setInterval(() => {
-    fakeProgress = Math.min(fakeProgress + Math.random() * 15, 85);
-    $loadingBar.style.width = fakeProgress + "%";
-  }, 200);
-
-  const aScene = document.getElementById("aScene");
-
-  const applyFirstScene = () => {
-    // Muat gambar pertama
-    loadImage(0).then(() => {
-      clearInterval(fakeInterval);
-      $loadingBar.style.width = "100%";
-      $loadingHint.textContent = "Siap!";
-
-      $sky.setAttribute("src", SCENES[0].src);
-      $sky.setAttribute("rotation", SCENES[0].rotation);
-      applyCameraYaw(SCENES[0].cameraYaw);
-      updateHUD();
-
-      // Preload tetangga di background
-      preloadNeighbors(0);
-
-      setTimeout(hideLoading, 400);
+function updateNavArrows() {
+  // Remove existing arrows
+  activeNavArrows.forEach((g) => {
+    scene.remove(g);
+    g.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
     });
-  };
+  });
+  activeNavArrows = [];
 
-  if (aScene.hasLoaded) {
-    applyFirstScene();
-  } else {
-    aScene.addEventListener("loaded", applyFirstScene, { once: true });
-  }
+  const sceneData = SCENES[currentIndex];
+  if (!sceneData || !sceneData.links || sceneData.links.length === 0) return;
 
-  // Fallback timeout (jika gambar pertama gagal load)
-  setTimeout(() => {
-    if (!$loadingScreen.classList.contains("hidden")) {
-      clearInterval(fakeInterval);
-      $loadingBar.style.width = "100%";
-      $sky.setAttribute("src", SCENES[0].src);
-      $sky.setAttribute("rotation", SCENES[0].rotation);
-      applyCameraYaw(SCENES[0].cameraYaw);
-      updateHUD();
-      setTimeout(hideLoading, 300);
+  sceneData.links.forEach((link) => {
+    const arrow = createNavArrow(link);
+    scene.add(arrow);
+    activeNavArrows.push(arrow);
+  });
+}
+
+function hideNavArrows() {
+  activeNavArrows.forEach((g) => {
+    g.visible = false;
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  3D LABEL PLANES (CanvasTexture)
+// ══════════════════════════════════════════════════════════════
+
+function createTextTexture(text, options = {}) {
+  const fontSize = options.fontSize || 40;
+  const fontFamily = options.fontFamily || "Inter, sans-serif";
+  const textColor = options.textColor || "#FFFFFF";
+  const bgColor = options.bgColor || "rgba(0, 0, 0, 0.60)";
+  const padding = options.padding || 24;
+
+  // Measure text
+  const measureCanvas = document.createElement("canvas");
+  const measureCtx = measureCanvas.getContext("2d");
+  measureCtx.font = `500 ${fontSize}px ${fontFamily}`;
+  const metrics = measureCtx.measureText(text);
+  const textWidth = metrics.width;
+
+  const canvasWidth = Math.ceil(textWidth + padding * 2);
+  const canvasHeight = Math.ceil(fontSize * 1.5 + padding * 1.2);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
+  const ctx = canvas.getContext("2d");
+
+  // Background with rounded corners
+  const radius = 12;
+  ctx.fillStyle = bgColor;
+  ctx.beginPath();
+  ctx.moveTo(radius, 0);
+  ctx.lineTo(canvasWidth - radius, 0);
+  ctx.quadraticCurveTo(canvasWidth, 0, canvasWidth, radius);
+  ctx.lineTo(canvasWidth, canvasHeight - radius);
+  ctx.quadraticCurveTo(canvasWidth, canvasHeight, canvasWidth - radius, canvasHeight);
+  ctx.lineTo(radius, canvasHeight);
+  ctx.quadraticCurveTo(0, canvasHeight, 0, canvasHeight - radius);
+  ctx.lineTo(0, radius);
+  ctx.quadraticCurveTo(0, 0, radius, 0);
+  ctx.closePath();
+  ctx.fill();
+
+  // Text
+  ctx.font = `500 ${fontSize}px ${fontFamily}`;
+  ctx.fillStyle = textColor;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, canvasWidth / 2, canvasHeight / 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+
+  return { texture, width: canvasWidth, height: canvasHeight };
+}
+
+function createLabelPlane(label, posStr, rotStr) {
+  const { texture, width, height } = createTextTexture(label);
+
+  // Scale to world units (maintain aspect ratio)
+  const planeHeight = 0.5;
+  const planeWidth = (width / height) * planeHeight;
+
+  const geo = new THREE.PlaneGeometry(planeWidth, planeHeight);
+  const mat = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthTest: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+
+  const pos = parsePosition(posStr || "0 2 -8");
+  const rot = parseRotationDeg(rotStr || "0 0 0");
+  mesh.position.copy(pos);
+  mesh.rotation.copy(rot);
+
+  mesh.renderOrder = 1;
+
+  return mesh;
+}
+
+function updateLabelPlanes() {
+  // Remove existing
+  activeLabelPlanes.forEach((m) => {
+    scene.remove(m);
+    if (m.geometry) m.geometry.dispose();
+    if (m.material) {
+      if (m.material.map) m.material.map.dispose();
+      m.material.dispose();
     }
-  }, 15000);
+  });
+  activeLabelPlanes = [];
+
+  const sceneData = SCENES[currentIndex];
+  const planes = sceneData.planes;
+  if (!planes || planes.length === 0) return;
+
+  planes.forEach((planeDef) => {
+    const label = planeDef.label || sceneData.label;
+    const mesh = createLabelPlane(label, planeDef.pos, planeDef.rot);
+    scene.add(mesh);
+    activeLabelPlanes.push(mesh);
+  });
 }
 
-function hideLoading() {
-  $loadingScreen.classList.add("hidden");
+// ── Nadir Copyright ─────────────────────────────────────────
+
+function createNadirCopyright() {
+  const { texture, width, height } = createTextTexture(
+    "Copyright 2026 | Dibuat oleh Kukerta UNRI 2026",
+    {
+      fontSize: 28,
+      bgColor: "rgba(0, 0, 0, 0)",
+      textColor: "rgba(255, 255, 255, 0.7)",
+    }
+  );
+
+  const planeHeight = 0.4;
+  const planeWidth = (width / height) * planeHeight;
+
+  const geo = new THREE.PlaneGeometry(planeWidth, planeHeight);
+  const mat = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthTest: false,
+  });
+  nadirMesh = new THREE.Mesh(geo, mat);
+  nadirMesh.position.set(0, 0.05, 0);
+  nadirMesh.rotation.set(-Math.PI / 2, 0, 0);
+  nadirMesh.renderOrder = 2;
+  scene.add(nadirMesh);
 }
 
-// ── Core: Go To Scene (Google Maps zoom-forward transition) ──
-const FOV_NORMAL = 80; // derajat FOV saat normal
-const FOV_ZOOMED = 55; // derajat FOV saat zoom-in
-const ZOOM_IN_MS = 300; // durasi zoom-in (ms)
-const ZOOM_OUT_MS = 380; // durasi zoom-out / settle (ms)
+// ══════════════════════════════════════════════════════════════
+//  SCENE NAVIGATION
+// ══════════════════════════════════════════════════════════════
 
 function goToScene(index) {
   if (isTransitioning) return;
-  // Bounds check (navigasi sekarang berbasis graph, bukan circular)
   if (index < 0 || index >= SCENES.length) return;
-
   if (index === currentIndex) return;
 
   isTransitioning = true;
-  const next = SCENES[index];
-  const camEl = document.getElementById("camera");
-  const canvas = document.querySelector("a-scene canvas");
 
-  // Cek apakah gambar sudah ada di cache
-  if (isImageCached(index)) {
-    // Gambar sudah siap — langsung transisi
-    performTransition(index, next, camEl, canvas);
+  if (isTextureCached(index)) {
+    performTransition(index);
   } else {
-    // Gambar belum siap — tampilkan spinner, muat dulu
     showSceneSpinner();
-
-    loadImage(index).then(() => {
+    loadTexture(index).then(() => {
       hideSceneSpinner();
-      performTransition(index, next, camEl, canvas);
+      performTransition(index);
     });
   }
 }
 
-/**
- * Jalankan animasi transisi zoom-forward yang dioptimalkan.
- * Alur: zoom-in (blur) → swap gambar → zoom-out
- */
-function performTransition(index, next, camEl, canvas) {
-  // Sembunyikan nav buttons selama transisi
-  hideNavButtons();
+function performTransition(index) {
+  hideNavArrows();
 
-  // ── Phase 1: Zoom-in + blur (maju ke depan) ───────────
-  canvas?.classList.add("vr-zoom");
+  // Phase 1: Zoom-in + blur
+  $canvas.classList.add("vr-zoom");
 
-  animateFOV(camEl, FOV_NORMAL, FOV_ZOOMED, ZOOM_IN_MS, easeInQuart, () => {
-    // ── Midpoint: swap scene di titik paling blur ──────
-    // Blur + scale cukup menyembunyikan pergantian tanpa overlay
-    resetZoom();
-    $sky.setAttribute("src", next.src);
-    $sky.setAttribute("rotation", next.rotation);
-    applyCameraYaw(next.cameraYaw);
+  animateFOV(FOV_NORMAL, FOV_ZOOMED, ZOOM_IN_MS, easeInQuart, () => {
+    // Midpoint: swap scene
+    $canvas.classList.remove("vr-zoom");
+
     currentIndex = index;
+    applyScene(index);
     updateHUD();
 
-    // ── Phase 2: Zoom-out (settle ke lokasi baru) ──────
-    canvas?.classList.remove("vr-zoom");
-    animateFOV(camEl, FOV_ZOOMED, FOV_NORMAL, ZOOM_OUT_MS, easeOutQuart, () => {
+    // Reset FOV for zoom-out
+    camera.fov = FOV_ZOOMED;
+    camera.updateProjectionMatrix();
+
+    // Phase 2: Zoom-out (settle)
+    animateFOV(FOV_ZOOMED, FOV_NORMAL, ZOOM_OUT_MS, easeOutQuart, () => {
       isTransitioning = false;
     });
 
-    // Preload tetangga baru di background
     preloadNeighbors(index);
   });
 }
 
-/**
- * Tampilkan mini spinner saat gambar scene sedang dimuat.
- */
-function showSceneSpinner() {
-  if ($sceneSpinner) $sceneSpinner.classList.add("visible");
-}
-
-function hideSceneSpinner() {
-  if ($sceneSpinner) $sceneSpinner.classList.remove("visible");
-}
-
-// ── FOV Animation Engine ───────────────────────────────────
-function animateFOV(camEl, fromFov, toFov, duration, easeFn, onComplete) {
+function animateFOV(fromFov, toFov, duration, easeFn, onComplete) {
   const startTime = performance.now();
 
   function tick(now) {
@@ -339,7 +574,8 @@ function animateFOV(camEl, fromFov, toFov, duration, easeFn, onComplete) {
     const eased = easeFn(raw);
     const fov = fromFov + (toFov - fromFov) * eased;
 
-    camEl.setAttribute("camera", "fov", fov);
+    camera.fov = fov;
+    camera.updateProjectionMatrix();
 
     if (raw < 1) {
       requestAnimationFrame(tick);
@@ -351,292 +587,250 @@ function animateFOV(camEl, fromFov, toFov, duration, easeFn, onComplete) {
   requestAnimationFrame(tick);
 }
 
-// ── Easing functions ───────────────────────────────────────
-// Quart: lebih ekspresif dari cubic — akselerasi lebih cepat, deselerasi lebih smooth
-function easeInQuart(t) {
-  return t * t * t * t;
-}
-function easeOutQuart(t) {
-  return 1 - Math.pow(1 - t, 4);
-}
-// Cubic (dipertahankan sebagai referensi)
-function easeInCubic(t) {
-  return t * t * t;
-}
-function easeOutCubic(t) {
-  return 1 - Math.pow(1 - t, 3);
-}
-
-// ── Apply Camera Yaw (arah pandang awal per scene) ─────────
-function applyCameraYaw(yawDeg) {
-  const camEl = document.getElementById("camera");
-  if (!camEl || !camEl.object3D) return;
-  camEl.object3D.rotation.y = THREE.MathUtils.degToRad(yawDeg || 0);
-  camEl.object3D.rotation.x = 0; // reset pitch ke horizon
-}
-
-// ── Virtual Navigation Buttons (Multi-Directional, Dynamic) ──
-// Tombol navigasi 3D di-generate secara dinamis dari links[] di scene.js.
-// Mendukung 1–4 arah: N (utara), S (selatan), E (timur), W (barat).
-
-// Default posisi per arah mata angin
-const DIR_DEFAULTS = {
-  N: { pos: "0 0 -5", rot: "-90 0 0" },
-  S: { pos: "0 0 5", rot: "-90 180 0" },
-  E: { pos: "5 0 0", rot: "-90 -90 0" },
-  W: { pos: "-5 0 0", rot: "-90 90 0" },
-};
-
-// Warna debug per arah (mudah diganti putih semua saat final)
-const DIR_COLORS = {
-  N: "#00E676", // hijau
-  S: "#FF5252", // merah
-  E: "#448AFF", // biru
-  W: "#FFD740", // kuning
-};
-
-/**
- * Inisialisasi virtual nav — tidak perlu bind handler statis lagi.
- * Tombol dibuat/dihapus secara dinamis oleh updateNavButtons().
- */
-function initVirtualNav() {
-  // Dynamic buttons — nothing to init
-}
-
-/**
- * Cari index scene berdasarkan ID.
- * @param {number} targetId - ID scene tujuan
- * @returns {number} index di array SCENES, atau -1 jika tidak ditemukan
- */
 function findSceneIndex(targetId) {
   return SCENES.findIndex((s) => s.id === targetId);
 }
 
-/**
- * Navigasi ke scene berdasarkan ID (bukan index).
- * @param {number} targetId - ID scene tujuan
- */
 function goToSceneById(targetId) {
   const idx = findSceneIndex(targetId);
   if (idx !== -1) {
     goToScene(idx);
-  } else {
-    console.warn(`Scene dengan ID ${targetId} tidak ditemukan.`);
   }
 }
 
-/**
- * Cari link ke arah tertentu dari scene aktif.
- * @param {string} dir - arah: "N", "S", "E", atau "W"
- * @returns {object|null} link object atau null jika tidak ada
- */
 function getLinkByDir(dir) {
-  const scene = SCENES[currentIndex];
-  if (!scene || !scene.links) return null;
-  return scene.links.find((l) => l.dir === dir) || null;
+  const sceneData = SCENES[currentIndex];
+  if (!sceneData || !sceneData.links) return null;
+  return sceneData.links.find((l) => l.dir === dir) || null;
 }
 
-/**
- * Buat satu entity tombol navigasi 3D di A-Frame.
- * @param {object} link - objek link dari scene.links[]
- * @returns {HTMLElement} entity A-Frame
- */
-function createNavButton(link) {
-  const defaults = DIR_DEFAULTS[link.dir] || DIR_DEFAULTS.N;
-  const color = DIR_COLORS[link.dir] || "#FFFFFF";
+// ══════════════════════════════════════════════════════════════
+//  SPINNERS
+// ══════════════════════════════════════════════════════════════
 
-  const entity = document.createElement("a-entity");
-  entity.classList.add("clickable", "nav-btn-dynamic");
-  entity.setAttribute("position", link.pos || defaults.pos);
-  entity.setAttribute("rotation", link.rot || defaults.rot);
-
-  // Arrow triangle
-  const tri = document.createElement("a-triangle");
-  tri.classList.add("clickable");
-  tri.setAttribute("color", color);
-  tri.setAttribute("vertex-a", "0 0.35 0");
-  tri.setAttribute("vertex-b", "-0.25 -0.15 0");
-  tri.setAttribute("vertex-c", "0.25 -0.15 0");
-  tri.setAttribute(
-    "material",
-    "side: double; opacity: 0.85; transparent: true; shader: flat",
-  );
-  entity.appendChild(tri);
-
-  // Background circle
-  const circle = document.createElement("a-circle");
-  circle.classList.add("clickable");
-  circle.setAttribute("radius", "0.45");
-  circle.setAttribute("color", color);
-  circle.setAttribute("position", "0 0.07 -0.005");
-  circle.setAttribute(
-    "material",
-    "side: double; opacity: 0.15; transparent: true; shader: flat",
-  );
-  entity.appendChild(circle);
-
-  // Click handler → navigate to targetId
-  entity.addEventListener("click", () => {
-    goToSceneById(link.targetId);
-  });
-
-  return entity;
+function showSceneSpinner() {
+  if ($sceneSpinner) $sceneSpinner.classList.add("visible");
 }
 
-/**
- * Hapus semua tombol navigasi lama dan buat tombol baru
- * berdasarkan links[] dari scene aktif.
- */
-function updateNavButtons() {
-  const aScene = document.getElementById("aScene");
-  if (!aScene) return;
-
-  // Hapus semua tombol navigasi aktif sebelumnya
-  activeNavButtons.forEach((el) => {
-    if (el.parentNode) el.parentNode.removeChild(el);
-  });
-  activeNavButtons = [];
-
-  const scene = SCENES[currentIndex];
-  if (!scene || !scene.links || scene.links.length === 0) return;
-
-  // Buat tombol baru untuk setiap link
-  scene.links.forEach((link) => {
-    const btn = createNavButton(link);
-    aScene.appendChild(btn);
-    activeNavButtons.push(btn);
-  });
+function hideSceneSpinner() {
+  if ($sceneSpinner) $sceneSpinner.classList.remove("visible");
 }
 
-/**
- * Sembunyikan semua tombol navigasi dinamis saat transisi.
- */
-function hideNavButtons() {
-  activeNavButtons.forEach((el) => {
-    el.setAttribute("visible", false);
+// ══════════════════════════════════════════════════════════════
+//  RAYCASTER (Click & Hover on Nav Arrows)
+// ══════════════════════════════════════════════════════════════
+
+function onPointerMove(event) {
+  // Calculate normalized mouse position
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  // Raycast against nav arrows
+  raycaster.setFromCamera(mouse, camera);
+  const clickables = [];
+  activeNavArrows.forEach((g) => {
+    g.traverse((child) => {
+      if (child.isMesh && !child.userData.isGlow) clickables.push(child);
+    });
   });
+
+  const intersects = raycaster.intersectObjects(clickables, false);
+
+  if (intersects.length > 0) {
+    const hit = intersects[0].object;
+    const arrowGroup = findParentArrowGroup(hit);
+
+    if (arrowGroup && hoveredArrow !== arrowGroup) {
+      // Unhover previous
+      if (hoveredArrow) unhoverArrow(hoveredArrow);
+      hoveredArrow = arrowGroup;
+      hoverArrow(arrowGroup);
+      $canvas.style.cursor = "pointer";
+    }
+  } else {
+    if (hoveredArrow) {
+      unhoverArrow(hoveredArrow);
+      hoveredArrow = null;
+      $canvas.style.cursor = "";
+    }
+  }
 }
 
-// ── Label Planes 3D (Panel Nama Lokasi, Multi-Plane Support) ───────
-// Dibaca dari field planes[] di scene.js.
-// Tiap elemen: { pos: "X Y Z", rot: "X Y Z" }
-
-/**
- * Buat satu entitas label plane di A-Frame secara dinamis.
- * @param {string} label  - teks yang ditampilkan
- * @param {string} pos    - posisi "X Y Z"
- * @param {string} rot    - rotasi "X Y Z" (default "0 0 0")
- */
-function createLabelPlaneEntity(label, pos, rot) {
-  const entity = document.createElement("a-entity");
-  entity.setAttribute("position", pos || "0 2 -8");
-  entity.setAttribute("rotation", rot || "0 0 0");
-
-  // Background hitam transparan
-  const bg = document.createElement("a-plane");
-  bg.setAttribute("width", "3.2");
-  bg.setAttribute("height", "0.5");
-  bg.setAttribute("color", "#000000");
-  bg.setAttribute(
-    "material",
-    "opacity: 0.60; transparent: true; shader: flat; side: double",
-  );
-  bg.setAttribute("position", "0 0 0");
-  entity.appendChild(bg);
-
-  // Teks label putih di tengah plane
-  const text = document.createElement("a-text");
-  text.setAttribute("value", label || "");
-  text.setAttribute("color", "#FFFFFF");
-  text.setAttribute("align", "center");
-  text.setAttribute("anchor", "center");
-  text.setAttribute("baseline", "center");
-  text.setAttribute("width", "3.0");
-  text.setAttribute("position", "0 0 0.01");
-  entity.appendChild(text);
-
-  return entity;
+function findParentArrowGroup(mesh) {
+  let obj = mesh;
+  while (obj) {
+    if (obj.userData && obj.userData.isNavArrow) return obj;
+    obj = obj.parent;
+  }
+  return null;
 }
 
-/**
- * Hapus semua plane lama dan buat plane baru sesuai data scene aktif.
- * Membaca field planes[] dari SCENES[currentIndex].
- * Jika planes tidak ada / kosong, tidak ada plane yang ditampilkan.
- */
-function updateLabelPlanes() {
-  const aScene = document.getElementById("aScene");
-  if (!aScene) return;
-
-  // Hapus semua plane aktif sebelumnya
-  activeLabelPlanes.forEach((el) => {
-    if (el.parentNode) el.parentNode.removeChild(el);
+function hoverArrow(group) {
+  group.traverse((child) => {
+    if (child.isMesh) {
+      if (child.userData.isGlow) {
+        child.material.opacity = 0.4;
+      }
+    }
   });
-  activeLabelPlanes = [];
-
-  const scene = SCENES[currentIndex];
-  const planes = scene.planes;
-
-  // Tidak ada planes di scene ini → tidak perlu render apapun
-  if (!planes || planes.length === 0) return;
-
-  // Buat entitas baru untuk setiap plane
-  planes.forEach((planeDef) => {
-    const entity = createLabelPlaneEntity(
-      planeDef.label || scene.label, // label per-plane, fallback ke label scene
-      planeDef.pos,
-      planeDef.rot,
-    );
-    aScene.appendChild(entity);
-    activeLabelPlanes.push(entity);
-  });
+  // Scale up slightly
+  group.scale.set(1.2, 1.2, 1.2);
 }
 
-// ── Update HUD ──────────────────────────────────────────────
+function unhoverArrow(group) {
+  group.traverse((child) => {
+    if (child.isMesh) {
+      if (child.userData.isGlow) {
+        child.material.opacity = 0;
+      }
+    }
+  });
+  group.scale.set(1, 1, 1);
+}
+
+function onPointerDown(event) {
+  // Store mouse position to detect click vs drag
+  onPointerDown._startX = event.clientX;
+  onPointerDown._startY = event.clientY;
+}
+
+function onPointerUp(event) {
+  // Only fire click if mouse didn't drag significantly
+  const dx = event.clientX - (onPointerDown._startX || 0);
+  const dy = event.clientY - (onPointerDown._startY || 0);
+  const dist = Math.sqrt(dx * dx + dy * dy);
+
+  if (dist > 5) return; // was a drag, not a click
+
+  if (isTransitioning) return;
+
+  // Raycast for click
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+  const clickables = [];
+  activeNavArrows.forEach((g) => {
+    g.traverse((child) => {
+      if (child.isMesh && !child.userData.isGlow) clickables.push(child);
+    });
+  });
+
+  const intersects = raycaster.intersectObjects(clickables, false);
+  if (intersects.length > 0) {
+    const hit = intersects[0].object;
+    const arrowGroup = findParentArrowGroup(hit);
+    if (arrowGroup && arrowGroup.userData.targetId != null) {
+      goToSceneById(arrowGroup.userData.targetId);
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  HUD MANAGEMENT
+// ══════════════════════════════════════════════════════════════
+
 function updateHUD() {
-  const scene = SCENES[currentIndex];
+  const sceneData = SCENES[currentIndex];
 
-  if ($sceneLabel) $sceneLabel.textContent = scene.label;
-  if ($sceneDesc) $sceneDesc.textContent = scene.description;
-  if ($sceneNum) $sceneNum.textContent = currentIndex + 1;
+  if ($sceneLabel) $sceneLabel.textContent = sceneData.label;
+  if ($sceneDesc) $sceneDesc.textContent = sceneData.description;
 
-  // HUD buttons: disable jika tidak ada link ke arah N/S
-  if ($btnPrev) $btnPrev.disabled = !getLinkByDir("S");
-  if ($btnNext) $btnNext.disabled = !getLinkByDir("N");
-
-  // Update 3-dot indicator
   updateDots();
-
-  // Update tombol navigasi 3D (dynamic, multi-arah)
-  updateNavButtons();
-
-  // Update label planes 3D (multi-plane support)
+  updateNavArrows();
   updateLabelPlanes();
 }
 
-// ── Compass (live dari rotasi kamera) ──────────────────────
-// COMPASS_OFFSET: geser arah North di HUD (derajat, searah jarum jam)
-// 0 = default | 90 = North geser 90° ke kanan | -90 = ke kiri
-const COMPASS_OFFSET = 90;
+// ── Scene Dots (3 dots) ─────────────────────────────────────
 
-function startCompass() {
-  const camEl = document.getElementById("camera");
-  if (!camEl) return;
-
-  // Tunggu sampai A-Frame scene siap
-  const aScene = document.getElementById("aScene");
-  const run = () => {
-    setInterval(() => {
-      if (!camEl.object3D) return;
-      const yDeg = THREE.MathUtils.radToDeg(camEl.object3D.rotation.y);
-      $compassNeedle.style.transform = `rotate(${-yDeg + COMPASS_OFFSET}deg)`;
-    }, 60);
-  };
-
-  if (aScene.hasLoaded) run();
-  else aScene.addEventListener("loaded", run, { once: true });
+function buildDots() {
+  $sceneDots.innerHTML = "";
+  for (let i = 0; i < 3; i++) {
+    const dot = document.createElement("div");
+    dot.className = "scene-dot";
+    $sceneDots.appendChild(dot);
+  }
+  updateDots();
 }
 
-// ── Drag Hint Auto-hide ─────────────────────────────────────
+function updateDots() {
+  const dots = $sceneDots.querySelectorAll(".scene-dot");
+  if (dots.length < 3) return;
+
+  let activeIdx;
+  if (currentIndex === 0) {
+    activeIdx = 0;
+  } else if (currentIndex === SCENES.length - 1) {
+    activeIdx = 2;
+  } else {
+    activeIdx = 1;
+  }
+
+  dots.forEach((dot, i) => {
+    dot.classList.toggle("active", i === activeIdx);
+  });
+}
+
+// ── Scene Selector ──────────────────────────────────────────
+
+function populateSceneSelector() {
+  if (!$selectScene) return;
+  $selectScene.innerHTML = "";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Lompat ke...";
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  $selectScene.appendChild(placeholder);
+
+  const labelMap = new Map();
+  SCENES.forEach((s) => {
+    const key = (s.label || "").trim().toLowerCase();
+    if (!key) return;
+    if (!labelMap.has(key)) {
+      labelMap.set(key, s);
+    } else if (s.id < labelMap.get(key).id) {
+      labelMap.set(key, s);
+    }
+  });
+
+  const uniqueScenes = Array.from(labelMap.values()).sort((a, b) => a.id - b.id);
+
+  uniqueScenes.forEach((s) => {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = s.label || "Lokasi " + s.id;
+    $selectScene.appendChild(opt);
+  });
+
+  $selectScene.addEventListener("change", (e) => {
+    const val = e.target.value;
+    if (val) {
+      goToSceneById(Number(val));
+      $selectScene.value = "";
+    }
+  });
+}
+
+// ── Compass ──────────────────────────────────────────────────
+
+function updateCompass() {
+  if (!$compassNeedle) return;
+
+  // Get camera's look direction as azimuthal angle
+  const lookDir = new THREE.Vector3();
+  camera.getWorldDirection(lookDir);
+
+  // Calculate yaw from the look direction (angle around Y axis)
+  const yDeg = THREE.MathUtils.radToDeg(Math.atan2(lookDir.x, lookDir.z));
+  $compassNeedle.style.transform = `rotate(${-yDeg + COMPASS_OFFSET}deg)`;
+}
+
+// ── Drag Hint ───────────────────────────────────────────────
+
 function scheduleDragHintDismiss() {
   const dismiss = () => {
     if (hintDismissed) return;
@@ -650,25 +844,59 @@ function scheduleDragHintDismiss() {
   setTimeout(dismiss, 5000);
 }
 
-// ── Events ─────────────────────────────────────────────────
-function bindEvents() {
-  // HUD buttons: next = follow N link, prev = follow S link
-  if ($btnNext) {
-    $btnNext.addEventListener("click", () => {
-      const link = getLinkByDir("N");
-      if (link) goToSceneById(link.targetId);
-    });
-  }
+// ══════════════════════════════════════════════════════════════
+//  ZOOM (Scroll Wheel + Pinch)
+// ══════════════════════════════════════════════════════════════
 
-  if ($btnPrev) {
-    $btnPrev.addEventListener("click", () => {
-      const link = getLinkByDir("S");
-      if (link) goToSceneById(link.targetId);
-    });
-  }
+function bindZoom() {
+  renderer.domElement.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      if (isTransitioning) return;
+      const delta = e.deltaY > 0 ? 3 : -3;
+      camera.fov = Math.max(ZOOM_FOV_MIN, Math.min(ZOOM_FOV_MAX, camera.fov + delta));
+      camera.updateProjectionMatrix();
+    },
+    { passive: false }
+  );
 
-  // Keyboard navigation (multi-directional)
-  // Arrow keys / WASD → follow link ke arah N/S/E/W
+  // Pinch zoom
+  let lastPinchDist = 0;
+
+  renderer.domElement.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 2) {
+      lastPinchDist = getPinchDistance(e.touches);
+    }
+  });
+
+  renderer.domElement.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 2) {
+      const dist = getPinchDistance(e.touches);
+      const diff = lastPinchDist - dist;
+      if (!isTransitioning) {
+        camera.fov = Math.max(
+          ZOOM_FOV_MIN,
+          Math.min(ZOOM_FOV_MAX, camera.fov + diff * 0.15)
+        );
+        camera.updateProjectionMatrix();
+      }
+      lastPinchDist = dist;
+    }
+  });
+}
+
+function getPinchDistance(touches) {
+  const dx = touches[0].clientX - touches[1].clientX;
+  const dy = touches[0].clientY - touches[1].clientY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  KEYBOARD NAVIGATION
+// ══════════════════════════════════════════════════════════════
+
+function bindKeyboard() {
   document.addEventListener("keydown", (e) => {
     let dir = null;
     switch (e.key) {
@@ -695,86 +923,18 @@ function bindEvents() {
         toggleFullscreen();
         return;
     }
-    // 'A' dan 'a' dipetakan ke W (Barat), 'S' hanya lowercase agar tidak bentrok Shift+S
     if (dir === "A") dir = "W";
     if (dir) {
       const link = getLinkByDir(dir);
       if (link) goToSceneById(link.targetId);
     }
   });
-
-  $btnFullscreen.addEventListener("click", toggleFullscreen);
-  document.addEventListener("fullscreenchange", onFullscreenChange);
-
-  $btnGyro.addEventListener("click", toggleGyro);
 }
 
-// ── Zoom (scroll wheel + pinch) ────────────────────────────
-// Mengubah FOV kamera untuk efek zoom in/out pada panorama
-const ZOOM_FOV_MIN = 30; // zoom-in maksimal
-const ZOOM_FOV_MAX = 100; // zoom-out maksimal
-let currentFov = FOV_NORMAL;
+// ══════════════════════════════════════════════════════════════
+//  FULLSCREEN
+// ══════════════════════════════════════════════════════════════
 
-function bindZoom() {
-  const canvas = document.querySelector("a-scene");
-  if (!canvas) return;
-
-  // Mouse wheel zoom
-  canvas.addEventListener(
-    "wheel",
-    (e) => {
-      e.preventDefault();
-      const delta = e.deltaY > 0 ? 3 : -3; // scroll down = zoom out, up = zoom in
-      applyZoom(delta);
-    },
-    { passive: false },
-  );
-
-  // Pinch zoom (mobile)
-  let lastPinchDist = 0;
-
-  canvas.addEventListener("touchstart", (e) => {
-    if (e.touches.length === 2) {
-      lastPinchDist = getPinchDistance(e.touches);
-    }
-  });
-
-  canvas.addEventListener("touchmove", (e) => {
-    if (e.touches.length === 2) {
-      const dist = getPinchDistance(e.touches);
-      const diff = lastPinchDist - dist;
-      applyZoom(diff * 0.15); // pinch in = zoom in, pinch out = zoom out
-      lastPinchDist = dist;
-    }
-  });
-}
-
-function getPinchDistance(touches) {
-  const dx = touches[0].clientX - touches[1].clientX;
-  const dy = touches[0].clientY - touches[1].clientY;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-function applyZoom(delta) {
-  if (isTransitioning) return;
-  const camEl = document.getElementById("camera");
-  if (!camEl) return;
-
-  currentFov = Math.max(
-    ZOOM_FOV_MIN,
-    Math.min(ZOOM_FOV_MAX, currentFov + delta),
-  );
-  camEl.setAttribute("camera", "fov", currentFov);
-}
-
-// Reset zoom saat pindah scene
-function resetZoom() {
-  currentFov = FOV_NORMAL;
-  const camEl = document.getElementById("camera");
-  if (camEl) camEl.setAttribute("camera", "fov", FOV_NORMAL);
-}
-
-// ── Fullscreen ─────────────────────────────────────────────
 function toggleFullscreen() {
   if (!document.fullscreenElement) {
     document.documentElement.requestFullscreen().catch(() => {});
@@ -789,13 +949,24 @@ function onFullscreenChange() {
   $btnFullscreen.style.color = isFs ? "var(--accent)" : "";
 }
 
-// ── Gyroscope ─────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  GYROSCOPE (Custom lightweight implementation)
+//  DeviceOrientationControls was removed from Three.js r134+
+// ══════════════════════════════════════════════════════════════
+
+let deviceOrientationHandler = null;
+
+function isMobileDevice() {
+  return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
 function toggleGyro() {
   if (typeof DeviceOrientationEvent === "undefined") {
     alert("Gyroscope tidak tersedia di perangkat ini.");
     return;
   }
-  if (!window.gyroEnabled) {
+
+  if (!gyroEnabled) {
     if (typeof DeviceOrientationEvent.requestPermission === "function") {
       DeviceOrientationEvent.requestPermission()
         .then((r) => {
@@ -811,7 +982,40 @@ function toggleGyro() {
 }
 
 function enableGyro() {
-  window.gyroEnabled = true;
+  gyroEnabled = true;
+
+  // Disable orbit controls while gyro is active
+  orbitControls.enabled = false;
+
+  // Listen to device orientation
+  deviceOrientationHandler = (event) => {
+    if (!gyroEnabled) return;
+
+    const alpha = event.alpha ? THREE.MathUtils.degToRad(event.alpha) : 0;
+    const beta = event.beta ? THREE.MathUtils.degToRad(event.beta) : 0;
+    const gamma = event.gamma ? THREE.MathUtils.degToRad(event.gamma) : 0;
+
+    // Apply device orientation to camera
+    const euler = new THREE.Euler(beta, alpha, -gamma, "YXZ");
+    camera.quaternion.setFromEuler(euler);
+
+    // Compensate for screen orientation
+    const screenOrientation = window.screen?.orientation?.angle || 0;
+    const screenQuat = new THREE.Quaternion();
+    screenQuat.setFromAxisAngle(
+      new THREE.Vector3(0, 0, 1),
+      -THREE.MathUtils.degToRad(screenOrientation)
+    );
+    camera.quaternion.multiply(screenQuat);
+
+    // World correction (device looks at floor by default, we want horizon)
+    const worldQuat = new THREE.Quaternion();
+    worldQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+    camera.quaternion.premultiply(worldQuat);
+  };
+
+  window.addEventListener("deviceorientation", deviceOrientationHandler, true);
+
   if ($btnGyro) {
     $btnGyro.textContent = "GYRO: ON";
     $btnGyro.style.color = "var(--accent)";
@@ -820,7 +1024,16 @@ function enableGyro() {
 }
 
 function disableGyro() {
-  window.gyroEnabled = false;
+  gyroEnabled = false;
+
+  if (deviceOrientationHandler) {
+    window.removeEventListener("deviceorientation", deviceOrientationHandler, true);
+    deviceOrientationHandler = null;
+  }
+
+  // Re-enable orbit controls
+  orbitControls.enabled = true;
+
   if ($btnGyro) {
     $btnGyro.textContent = "GYRO: OFF";
     $btnGyro.style.color = "";
@@ -828,232 +1041,117 @@ function disableGyro() {
   }
 }
 
-// ── Touch Pitch Manual (aktif saat Gyro OFF) ───────────────
-// A-Frame hanya handle yaw via touch di mobile.
-// Saat gyro dimatikan, handler ini tambah kontrol pitch (atas-bawah)
-// secara langsung ke camera object3D tanpa konflik.
-function bindTouchPitch() {
-  const aScene = document.getElementById("aScene");
-  if (!aScene) return;
+// ══════════════════════════════════════════════════════════════
+//  EVENTS BINDING
+// ══════════════════════════════════════════════════════════════
 
-  let lastTouchY = 0;
-  const PITCH_SENSITIVITY = 0.004; // radian per pixel
-  const PITCH_MAX = Math.PI / 2; // 90 derajat batas atas/bawah
+function bindEvents() {
+  $btnFullscreen.addEventListener("click", toggleFullscreen);
+  document.addEventListener("fullscreenchange", onFullscreenChange);
+  $btnGyro.addEventListener("click", toggleGyro);
 
-  aScene.addEventListener(
-    "touchstart",
-    (e) => {
-      if (e.touches.length === 1) {
-        lastTouchY = e.touches[0].clientY;
-      }
-    },
-    { passive: true },
-  );
-
-  aScene.addEventListener(
-    "touchmove",
-    (e) => {
-      // Hanya aktif saat gyro OFF dan single touch
-      if (window.gyroEnabled || e.touches.length !== 1) return;
-
-      const currentY = e.touches[0].clientY;
-      const deltaY = currentY - lastTouchY;
-      lastTouchY = currentY;
-
-      const camEl = document.getElementById("camera");
-      if (!camEl || !camEl.object3D) return;
-
-      // Tambah pitch (A-Frame sudah handle yaw via touchmove-nya sendiri)
-      const newPitch = Math.max(
-        -PITCH_MAX,
-        Math.min(
-          PITCH_MAX,
-          camEl.object3D.rotation.x + deltaY * PITCH_SENSITIVITY,
-        ),
-      );
-      camEl.object3D.rotation.x = newPitch;
-    },
-    { passive: true },
-  );
+  // Raycaster events
+  renderer.domElement.addEventListener("pointermove", onPointerMove);
+  renderer.domElement.addEventListener("pointerdown", onPointerDown);
+  renderer.domElement.addEventListener("pointerup", onPointerUp);
 }
 
-// ── Mouse Drag Inertia (Smooth Stopping) ───────────────────
-// Setelah user melepas mouse drag, kamera tetap berputar
-// dengan kecepatan yang menurun secara halus (momentum).
-function bindMouseInertia() {
-  const aScene = document.getElementById("aScene");
-  if (!aScene) return;
+// ══════════════════════════════════════════════════════════════
+//  LOADING & FIRST SCENE
+// ══════════════════════════════════════════════════════════════
 
-  let isDragging = false;
-  let velocityX = 0; // yaw velocity (rad/frame)
-  let velocityY = 0; // pitch velocity (rad/frame)
-  let lastMouseX = 0;
-  let lastMouseY = 0;
-  let lastMoveTime = 0;
-  let inertiaRAF = null;
+function loadFirstScene() {
+  $loadingHint.textContent = "Memuat panorama 360°...";
 
-  const FRICTION = 0.92; // Faktor pelambatan per frame (0.92 = halus)
-  const VELOCITY_THRESHOLD = 0.0001; // Batas minimum velocity untuk berhenti
-  const SENSITIVITY = 0.003; // Sensitivitas velocity dari mouse movement
-  const PITCH_MAX = Math.PI / 2.5; // Batas pitch atas/bawah (72 derajat)
+  let fakeProgress = 0;
+  const fakeInterval = setInterval(() => {
+    fakeProgress = Math.min(fakeProgress + Math.random() * 15, 85);
+    $loadingBar.style.width = fakeProgress + "%";
+  }, 200);
 
-  // Track mouse down
-  aScene.addEventListener("mousedown", (e) => {
-    if (e.button !== 0) return; // Hanya left click
-    isDragging = true;
-    lastMouseX = e.clientX;
-    lastMouseY = e.clientY;
-    lastMoveTime = performance.now();
-    velocityX = 0;
-    velocityY = 0;
+  loadTexture(0).then(() => {
+    clearInterval(fakeInterval);
+    $loadingBar.style.width = "100%";
+    $loadingHint.textContent = "Siap!";
 
-    // Hentikan inertia yang sedang berjalan
-    if (inertiaRAF) {
-      cancelAnimationFrame(inertiaRAF);
-      inertiaRAF = null;
-    }
+    applyScene(0);
+    updateHUD();
+    createNadirCopyright();
+
+    preloadNeighbors(0);
+
+    setTimeout(hideLoading, 400);
   });
 
-  // Track mouse movement untuk menghitung velocity
-  aScene.addEventListener("mousemove", (e) => {
-    if (!isDragging) return;
-
-    const now = performance.now();
-    const dt = now - lastMoveTime;
-
-    if (dt > 0) {
-      const dx = e.clientX - lastMouseX;
-      const dy = e.clientY - lastMouseY;
-
-      // Hitung velocity (dengan smoothing)
-      velocityX = velocityX * 0.5 + dx * SENSITIVITY * 0.5;
-      velocityY = velocityY * 0.5 + dy * SENSITIVITY * 0.5;
+  // Fallback timeout
+  setTimeout(() => {
+    if (!$loadingScreen.classList.contains("hidden")) {
+      clearInterval(fakeInterval);
+      $loadingBar.style.width = "100%";
+      applyScene(0);
+      updateHUD();
+      createNadirCopyright();
+      setTimeout(hideLoading, 300);
     }
+  }, 15000);
+}
 
-    lastMouseX = e.clientX;
-    lastMouseY = e.clientY;
-    lastMoveTime = now;
-  });
+function hideLoading() {
+  $loadingScreen.classList.add("hidden");
+}
 
-  // Mouse up → mulai inertia
-  const onMouseUp = (e) => {
-    if (!isDragging) return;
-    isDragging = false;
+// ══════════════════════════════════════════════════════════════
+//  RENDER LOOP
+// ══════════════════════════════════════════════════════════════
 
-    // Jika mouse diam terlalu lama sebelum release, jangan ada inertia
-    const timeSinceLastMove = performance.now() - lastMoveTime;
-    if (timeSinceLastMove > 80) {
-      velocityX = 0;
-      velocityY = 0;
-      return;
-    }
+function animate() {
+  requestAnimationFrame(animate);
 
-    // Mulai animasi inertia
-    startInertia();
-  };
-
-  window.addEventListener("mouseup", onMouseUp);
-
-  function startInertia() {
-    const camEl = document.getElementById("camera");
-    if (!camEl || !camEl.object3D) return;
-
-    // Hanya jalankan jika ada velocity yang signifikan
-    if (
-      Math.abs(velocityX) < VELOCITY_THRESHOLD &&
-      Math.abs(velocityY) < VELOCITY_THRESHOLD
-    ) {
-      return;
-    }
-
-    function inertiaStep() {
-      // Apply friction
-      velocityX *= FRICTION;
-      velocityY *= FRICTION;
-
-      // Berhenti jika velocity sudah sangat kecil
-      if (
-        Math.abs(velocityX) < VELOCITY_THRESHOLD &&
-        Math.abs(velocityY) < VELOCITY_THRESHOLD
-      ) {
-        velocityX = 0;
-        velocityY = 0;
-        inertiaRAF = null;
-        return;
-      }
-
-      // Apply rotation (inverted karena reverseMouseDrag: true)
-      // Yaw: velocityX positif = mouse geser kanan = kamera geser kiri
-      camEl.object3D.rotation.y += velocityX;
-
-      // Pitch: velocityY positif = mouse geser bawah = kamera geser atas
-      const newPitch = camEl.object3D.rotation.x + velocityY;
-      camEl.object3D.rotation.x = Math.max(
-        -PITCH_MAX,
-        Math.min(PITCH_MAX, newPitch),
-      );
-
-      inertiaRAF = requestAnimationFrame(inertiaStep);
-    }
-
-    inertiaRAF = requestAnimationFrame(inertiaStep);
+  // Update controls
+  if (!gyroEnabled) {
+    orbitControls.update();
   }
+
+  // Compass
+  updateCompass();
+
+  // Render
+  renderer.render(scene, camera);
 }
 
-// ── Jump to Scene by ID (Shortcut) ─────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  INIT
+// ══════════════════════════════════════════════════════════════
+
+function init() {
+  console.log("[VirtualTour] Initializing Three.js...");
+
+  initThree();
+
+  // Gyro default: OFF
+  gyroEnabled = false;
+  if ($btnGyro) {
+    $btnGyro.textContent = "GYRO: OFF";
+  }
+
+  buildDots();
+  loadFirstScene();
+  bindEvents();
+  bindZoom();
+  bindKeyboard();
+  populateSceneSelector();
+  scheduleDragHintDismiss();
+
+  // Start render loop
+  animate();
+
+  console.log("[VirtualTour] Init complete.");
+}
+
+// Global shortcut
 window.jumpToSceneById = function (id) {
   goToSceneById(Number(id));
 };
 
-function populateSceneSelector() {
-  if (!$selectScene) return;
-  $selectScene.innerHTML = "";
-
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "Lompat ke...";
-  placeholder.disabled = true;
-  placeholder.selected = true;
-  $selectScene.appendChild(placeholder);
-
-  // Kelompokkan scene berdasarkan label (case-insensitive).
-  // Simpan hanya scene dengan ID terkecil per label unik.
-  const labelMap = new Map(); // key: label lowercase, value: scene object (ID terkecil)
-
-  SCENES.forEach((scene) => {
-    const key = (scene.label || "").trim().toLowerCase();
-    if (!key) return; // skip scene tanpa label
-
-    if (!labelMap.has(key)) {
-      labelMap.set(key, scene);
-    } else {
-      // Ambil yang ID-nya lebih kecil
-      if (scene.id < labelMap.get(key).id) {
-        labelMap.set(key, scene);
-      }
-    }
-  });
-
-  // Urutkan berdasarkan ID scene terkecil di tiap grup agar urutan logis
-  const uniqueScenes = Array.from(labelMap.values()).sort(
-    (a, b) => a.id - b.id,
-  );
-
-  uniqueScenes.forEach((scene) => {
-    const opt = document.createElement("option");
-    opt.value = scene.id;
-    opt.textContent = scene.label || "Lokasi " + scene.id;
-    $selectScene.appendChild(opt);
-  });
-
-  $selectScene.addEventListener("change", (e) => {
-    const val = e.target.value;
-    if (val) {
-      window.jumpToSceneById(val);
-      $selectScene.value = "";
-    }
-  });
-}
-
 // ── Bootstrap ──────────────────────────────────────────────
-document.addEventListener("DOMContentLoaded", init);
+init();
